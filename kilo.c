@@ -20,6 +20,9 @@
 // errno, EAGAIN
 #include <errno.h>
 
+// ioctl..
+#include <sys/ioctl.h>
+
 // the value of a char k
 // with the top 3 bits set to 0
 // is the ctrl value of the char
@@ -29,7 +32,15 @@
 
 /*** LL Terminal Stuff ***/
 
-struct termios orig_termios;
+struct editorConfig {
+	int screenrows;
+	int screencols;
+	struct termios orig_termios;
+};
+
+struct editorConfig E;
+
+////----------
 
 void die(const char *s){
 
@@ -43,13 +54,33 @@ void die(const char *s){
 	exit(1);
 }
 
+
+int getWindowSize(int *rows, int *cols) {
+	struct winsize ws;
+
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 ||
+		ws.ws_col == 0){
+		return -1;
+	} else {
+		*cols = ws.ws_col;
+		*rows = ws.ws_row;
+		return 0;
+	}
+}
+
+void initEditor(){
+	if(getWindowSize(&E.screenrows, &E.screencols) == -1){
+		die("getWindowSize");
+	}
+}
+
 void disableRawMode(){
-	tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+	tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.orig_termios);
 };
 
 void enableRawMode(){
 
-	if (tcgetattr(STDIN_FILENO, &orig_termios) == -1){
+	if (tcgetattr(STDIN_FILENO, &E.orig_termios) == -1){
 		die("tcgetattr");
 	}
 
@@ -57,7 +88,7 @@ void enableRawMode(){
 	// comes from stdlib
 	atexit(disableRawMode);
 	
-	struct termios raw = orig_termios;
+	struct termios raw = E.orig_termios;
 
 	// c_lflag: miscellaneous flag bits
 	// disable:
@@ -130,6 +161,15 @@ void editorProcessKeypress(){
 
 /*** output ***/
 
+
+// some leading tildes
+void editorDrawRows(){
+	int y;
+	for (y = 0; y < E.screenrows; y++){
+		write(STDOUT_FILENO, "~\r\n", 3);
+	}
+}
+
 // VT100 stuff
 // clears screen and sets cursor top left
 void editorRefreshScreen() {
@@ -137,10 +177,20 @@ void editorRefreshScreen() {
 	// \x1b[ = escape
 	// J2 = erase whole screen
 	write(STDOUT_FILENO, "\x1b[2J", 4);
+	
 	// move cursor top left 1;1H = default
 	// generally y;xH sets cursor at x,y
 	write(STDOUT_FILENO, "\x1b[H", 3);
+
+	// writes tildes in the side
+	editorDrawRows();
+
+	// moves back the cursor top left
+	write(STDOUT_FILENO, "\x1b[H", 3);
+
+
 }
+
 
 int main(){
 
