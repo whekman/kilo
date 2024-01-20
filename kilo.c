@@ -2,6 +2,7 @@
 // Kilo: A text-editor written in <1000 lines of C
 // as originally written by Antirez
 
+// STDIN, STDOUT_FILENO
 #include <unistd.h>
 
 // perror
@@ -19,9 +20,23 @@
 // errno, EAGAIN
 #include <errno.h>
 
+// the value of a char k
+// with the top 3 bits set to 0
+// is the ctrl value of the char
+// eg ascii a = 97 = 0100 0001
+// and ctrl+a = 01 = 000000001
+#define CTRL_KEY(k) ((k) & 0x1f)
+
+/*** LL Terminal Stuff ***/
+
 struct termios orig_termios;
 
 void die(const char *s){
+
+	// see refresh screen
+	write(STDOUT_FILENO, "\x1b[2J", 4);
+	write(STDOUT_FILENO, "\x1b[H", 3);
+
 	// looks up global errno variable
 	// converts to descriptive error message
 	perror(s);
@@ -56,7 +71,7 @@ void enableRawMode(){
 	// IXON: ctrl-S = XOFF - stops data transmission
 	// 		 ctrl-Q = XON - opens transmission again
 	// ICRNL: converting \r (13) to \n (10)
-	// and legacy support
+	// and other 1960s stuff:
 	// BRKINT: BREAK support (breaks a telegraph circuit)
 	// INPCK: parity checking
 	// ISTRIP: strip off 8th bit
@@ -70,42 +85,72 @@ void enableRawMode(){
 	// output conversion of \n to \r\n
 	raw.c_oflag &=~(OPOST); // 0000 0101 --> 0000 0100
 	
-	// set time out that returns if no input
+	// set time out for returns of read() if no input
 	raw.c_cc[VMIN] = 0;
 	raw.c_cc[VTIME] = 1;
 
-	// applies the new settings;
-	// waits for pending output, discards input
-	// (TCSAFLUSH)
+	// flush  and apply the new settings
 	if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1){
 		die("tcsetattr");
 	}
 }
 
-int main() {
+// wait for a single keypress and return it
+char editorReadKey(){
+	int nread;
+	char c;
+
+	// Try read stdio in till valid, return c
+	// 		Note: STDIN_FILENO is a macro thatll evaluate to 0;
+	// 		the FD/syscall value for stdin		
+	while((nread = read(STDIN_FILENO, &c, 1))  != -1) {
+
+		if (nread == -1 && errno != EAGAIN) die ("read");
+	}
+
+	return c;
+	
+}
+
+/*** input ***/
+
+void editorProcessKeypress(){
+
+	char c = editorReadKey();
+
+	switch(c) {
+		case CTRL_KEY('s'):
+			// see refresh screen
+			write(STDOUT_FILENO, "\x1b[2J", 4);
+			write(STDOUT_FILENO, "\x1b[H", 3);
+			exit(0);
+			break;
+	}
+}
+
+/*** output ***/
+
+// VT100 stuff
+// clears screen and sets cursor top left
+void editorRefreshScreen() {
+	
+	// \x1b[ = escape
+	// J2 = erase whole screen
+	write(STDOUT_FILENO, "\x1b[2J", 4);
+	// move cursor top left 1;1H = default
+	// generally y;xH sets cursor at x,y
+	write(STDOUT_FILENO, "\x1b[H", 3);
+}
+
+int main(){
 
 	enableRawMode();
 
-	char c = '\0';
+	while(1){
 
-	while(1) {
-
-		// Note: STDIN_FILENO is a macro thatll evaluate to 0;
-		// the FD/syscall value for stdin		
-		
-		if (read(STDIN_FILENO, &c, 1)  == -1 && errno != EAGAIN){
-			die ("read");
-		}
-
-		if(iscntrl(c)){
-			printf("%d (ctrl)\r\n", c);
-		} else {
-			printf("%d ('%c')\r\n", c, c);
-		}
-
-		// exit
-		if (c == 's') break;
-
+		editorRefreshScreen();
+		editorProcessKeypress();
+	
 	}
 
 	printf("\n Exit (s)\n");
