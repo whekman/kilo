@@ -15,17 +15,28 @@
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
+#include <string.h>
 
 /*** defines ***/
+
+#define KILO_VERSION "0.0.1 by W. Hekman"
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 // gets the control value of a character
 // by setting the top 3 bits to 0
 // e.g a = 97 = 0100 0001 --> ctrl+a = 01 = 000000001
 
+enum editorKey {
+  ARROW_LEFT = 1000,
+  ARROW_RIGHT,
+  ARROW_UP,
+  ARROW_DOWN
+};
+
 /*** data ***/
 
 struct editorConfig {
+  int cx, cy; // cursor position
   int screenrows;
   int screencols;
   struct termios orig_termios;
@@ -85,7 +96,7 @@ void enableRawMode() {
 }
 
 // wait for a single keypress and return it
-char editorReadKey() {
+int editorReadKey() {
   int nread;
   char c;
 
@@ -102,7 +113,35 @@ char editorReadKey() {
   while((nread = read(STDIN_FILENO, &c, 1))  != 1) {
     if (nread == -1 && errno != EAGAIN) die("read");
   }
-  return c;
+
+
+  // handle length 3 esc-seqs
+  if (c == '\x1b') {
+    char seq[3];
+
+    // read in the start of the sequence
+    // if user presses esc key and we time-out
+    // just return ESC
+    if (read(STDIN_FILENO, &seq[0], 1) != 1) return '\x1b';
+    if (read(STDIN_FILENO, &seq[1], 1) != 1) return '\x1b';
+
+    // set-up aliassing from arrow keys to wasd keys
+    if (seq[0] == '[') {
+      switch (seq[1]) {
+      case 'A': return ARROW_UP;
+      case 'B': return ARROW_DOWN;
+      case 'C': return ARROW_RIGHT;
+      case 'D': return ARROW_LEFT;
+      }
+    }
+
+    // if we do not recognize the sequence we just return ESC
+    return '\x1b';
+  
+  // non esc-seqs
+  } else {
+    return c;
+  }
 }
 
 int getCursorPosition(int *rows, int *cols) {
@@ -150,20 +189,22 @@ int getWindowSize(int *rows, int *cols) {
 
 /*** append buffer ***/
 
-// buffer that holds the state of the screen
+// buffer that holds the output to write to the screen
 struct abuf {
-  char *b;
-  int len;
-
-}
+  char *b; // points to the start of the buffer
+  int len; // the length of the buffer
+};
 
 // acts as a constructor for abuf
-#define ABUF_INIT {NULL, 0}
+#define ABUF_INIT {NULL, 0};
 
 void abAppend(struct abuf *ab, const char *s, int len) {
+
+  // new points to the start of the memory block
   char *new = realloc(ab->b, ab->len + len);
 
   if (new == NULL) return;
+
   // copy in the string into the memory
   memcpy(&new[ab->len], s, len);
   ab->b = new;
@@ -177,14 +218,40 @@ void abFree(struct abuf *ab) {
 /*** output ***/
 
 // draw some tildes
-void editorDrawRows() {
+void editorDrawRows(struct abuf *ab) {
+
   int y;
   for (y = 0; y < E.screenrows; y++) {
 
-    write(STDOUT_FILENO, "~", 1);
+    if (y == E.screenrows / 3) {
+      char welcome_msg[80];
+      int welcome_msg_len = snprintf(welcome_msg, sizeof(welcome_msg),
+        " Kilo editor -- version %s", KILO_VERSION); // stores string in buffer
+      if (welcome_msg_len > E.screencols) welcome_msg_len = E.screencols;
+    
+      // add padding to center the message
+      int padding = (E.screenrows - welcome_msg_len) / 2;
+      if (padding) {
+        abAppend(ab, "~", 1);
+        padding--;
+      }
+
+      while (padding-- > 0) abAppend(ab, " ", 1);
+
+      abAppend(ab, welcome_msg, welcome_msg_len);
+    
+    } else {
+    
+      abAppend(ab, "~", 1); // put a tilde and
+    
+    }
+
+    abAppend(ab, "\x1b[K", 3); // erase the part right of the cursor
 
     if (y < E.screenrows -1) {
-      write(STDOUT_FILENO, "\r\n", 2);
+
+      abAppend(ab, "\r\n", 2);
+    
     }
 
   }
@@ -193,32 +260,96 @@ void editorDrawRows() {
 // VT100 stuff
 // clears screen and sets cursor top left
 void editorRefreshScreen() {
-  write(STDOUT_FILENO, "\x1b[2J", 4);
-  write(STDOUT_FILENO, "\x1b[H", 3);
 
-  editorDrawRows();
+  struct abuf ab = ABUF_INIT;
 
-  write(STDOUT_FILENO, "\x1b[H", 3);
+  abAppend(&ab, "\x1b[?25l", 6); // hide cursor
+  abAppend(&ab, "\x1b[H", 3); // top-left
+
+
+  // redraw using the cursor
+
+  editorDrawRows(&ab); // tildes + rows
+
+  // place the cursor
+  char buf[32];
+  
+  // esc-seq to place the cursor;
+  // +1 to convert to 1 indexing
+  
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+  
+  abAppend(&ab, buf, strlen(buf));
+
+  abAppend(&ab, "\x1b[?25h", 6); // show cursor
+
+  write(STDOUT_FILENO, ab.b, ab.len);
+
+  abFree(&ab);
+
 }
 
 /*** input ***/
 
+void editorMoveCursor(int key) {
+
+  // NOTE:
+  // moving right is x++
+  // moving down is y++
+
+  switch (key) {
+  case ARROW_LEFT:
+    if (E.cx != 0) {
+      E.cx--;  
+    }
+    break;
+  case ARROW_RIGHT:
+    if (E.cx != E.screencols - 1) {
+      E.cx++;
+    }
+    break;
+  case ARROW_UP:
+    if (E.cy != 0) {
+      E.cy--;
+    }
+    break;
+  case ARROW_DOWN:
+    if (E.cy != E.screenrows - 1) {
+      E.cy++;
+    }
+    break;
+  }
+}
+
+
 void editorProcessKeypress() {
 
-  char c = editorReadKey();
+  int c = editorReadKey();
 
   switch (c) {
-    case CTRL_KEY('q'):
-      write(STDOUT_FILENO, "\x1b[2J", 4);
-      write(STDOUT_FILENO, "\x1b[H", 3);
+    case CTRL_KEY('k'):
+      write(STDOUT_FILENO, "\x1b[2J", 4); // flush
+      write(STDOUT_FILENO, "\x1b[H", 3); // move top-left
       exit(0);
       break;
+
+    case ARROW_UP:
+    case ARROW_LEFT:
+    case ARROW_DOWN:
+    case ARROW_RIGHT:
+      editorMoveCursor(c);
+      break;
+
   }
 }
 
 /*** init ***/
 
 void initEditor() {
+
+  E.cx = 0;
+  E.cy = 0;
+
   if (getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
 }
 
@@ -228,6 +359,9 @@ int main() {
 
   while (1) {
     editorRefreshScreen();
+
+    // will hang in the following routine
+    // untill we get a key-press
     editorProcessKeypress();
   }
 
