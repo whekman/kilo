@@ -8,11 +8,16 @@
 
 /*** includes ***/
 
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
 #include <string.h>
@@ -40,10 +45,20 @@ enum editorKey {
 
 /*** data ***/
 
+
+// stores a row's characters
+typedef struct erow {
+  int size;
+  char *chars;
+} erow;
+
+// stores the editor's state
 struct editorConfig {
   int cx, cy; // cursor position
   int screenrows;
   int screencols;
+  int numrows;
+  erow row;
   struct termios orig_termios;
 };
 
@@ -231,6 +246,55 @@ int getWindowSize(int *rows, int *cols) {
   }
 }
 
+/*** fileio ***/
+
+// open a file
+void editorOpen(char *filename) {
+
+  FILE *fp = fopen(filename, "r");
+  if (!fp) die ("fopen");
+
+  // buffer - setting both to 0 makes getline set them appropriately
+  char *line = NULL;
+  ssize_t linecap = 0;
+  ssize_t linelen;
+
+  // get first line
+  linelen = getline(&line, &linecap, fp);
+
+  // getline() reads an entire line from stream, storing the address
+  // of the buffer containing the text into *lineptr.  The buffer is
+  // null-terminated and includes the newline character, if one was
+  // found.
+
+  // If *lineptr is set to NULL before the call, then getline() will
+  // allocate a buffer for storing the line.  This buffer should be
+  // freed by the user program even if getline() failed.
+
+  // On success, getline() and getdelim() return the number of
+  // characters read, including the delimiter character, but not
+  // including the terminating null byte ('\0').  This value can be
+  // used to handle embedded null bytes in the line read.
+
+  if (linelen != -1) {
+
+    // decrease linelen till we hit eol
+    while (linelen > 0 && (line[linelen -1] == '\n') || (line[linelen -1] == '\r') ) {
+      linelen--;
+    }
+
+    E.row.size = linelen;
+    E.row.chars = malloc(linelen + 1);
+    memcpy(E.row.chars, line, linelen);
+    E.row.chars[linelen] = '\0';
+    E.numrows = 1;
+  }
+
+  free(line);
+  fclose(fp);
+
+}
+
 /*** append buffer ***/
 
 // buffer that holds the output to write to the screen
@@ -261,43 +325,49 @@ void abFree(struct abuf *ab) {
 
 /*** output ***/
 
-// draw some tildes
 void editorDrawRows(struct abuf *ab) {
 
   int y;
+  
   for (y = 0; y < E.screenrows; y++) {
+  
+    // after the end of the text buffer 
+    if (y >= E.numrows) {
+  
+      // welcome message at 1/3 if no file
+      if (E.numrows == 0 && y == E.screenrows / 3) {
 
-    if (y == E.screenrows / 3) {
-      char welcome_msg[80];
-      int welcome_msg_len = snprintf(welcome_msg, sizeof(welcome_msg),
-        " Kilo editor -- version %s", KILO_VERSION); // stores string in buffer
-      if (welcome_msg_len > E.screencols) welcome_msg_len = E.screencols;
-    
-      // add padding to center the message
-      int padding = (E.screenrows - welcome_msg_len) / 2;
-      if (padding) {
+        char welcome[80];
+        int welcomelen = snprintf(welcome, sizeof(welcome),
+          "Kilo editor -- version %s", KILO_VERSION);
+        if (welcomelen > E.screencols) welcomelen = E.screencols;
+        int padding = (E.screencols - welcomelen) / 2;
+        if (padding) {
+          abAppend(ab, "~", 1);
+          padding--;
+        }
+        while (padding--) abAppend(ab, " ", 1);
+        abAppend(ab, welcome, welcomelen);
+
+      // not at 1/3
+      } else {
         abAppend(ab, "~", 1);
-        padding--;
       }
 
-      while (padding-- > 0) abAppend(ab, " ", 1);
-
-      abAppend(ab, welcome_msg, welcome_msg_len);
-    
+    // part of the text buffer
     } else {
-    
-      abAppend(ab, "~", 1); // put a tilde and
-    
+
+      // truncate erow to fit width of screen
+      int len = E.row.size;
+      if (len > E.screencols) len = E.screencols;
+      abAppend(ab, E.row.chars, len);
     }
 
-    abAppend(ab, "\x1b[K", 3); // erase the part right of the cursor
-
-    if (y < E.screenrows -1) {
-
+    // erase till end of line
+    abAppend(ab, "\x1b[K", 3);
+    if (y < E.screenrows - 1) {
       abAppend(ab, "\r\n", 2);
-    
     }
-
   }
 }
 
@@ -411,14 +481,19 @@ void initEditor() {
 
   E.cx = 0;
   E.cy = 0;
+  E.numrows = 0;
 
   if (getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
 }
 
-int main() {
+int main(int argc, char *argv[]) {
   enableRawMode();
   initEditor();
 
+  if (argc >= 2) {
+    editorOpen(argv[1]);  
+  }
+  
   while (1) {
     editorRefreshScreen();
 
