@@ -57,10 +57,11 @@ typedef struct erow {
 // stores the editor's state
 struct editorConfig {
   int cx, cy; // cursor position
+  int rowoff; // top-most row in viewer
   int screenrows;
   int screencols;
-  int numrows;
-  erow *row;
+  int numrows; // the number of textrows
+  erow *row; // an array of textrows
   struct termios orig_termios;
 };
 
@@ -339,14 +340,34 @@ void abFree(struct abuf *ab) {
 
 /*** output ***/
 
+
+void editorScroll() {
+
+  // scroll-up
+  if (E.cy < E.rowoff) {
+    E.rowoff = E.cy;
+  }
+
+  // scroll-down
+  if (E.cy >= E.rowoff + E.screenrows) {
+    E.rowoff = E.cy - E.screenrows + 1;
+  }
+
+}
+
 void editorDrawRows(struct abuf *ab) {
 
   int y;
   
   for (y = 0; y < E.screenrows; y++) {
+
+    // row to print will be
+    // screen location y
+    // relative to top-most row to print rowoff
+    int filerow = y + E.rowoff;
   
     // after the end of the text buffer 
-    if (y >= E.numrows) {
+    if (filerow >= E.numrows) {
   
       // welcome message at 1/3 if no file
       if (E.numrows == 0 && y == E.screenrows / 3) {
@@ -372,9 +393,9 @@ void editorDrawRows(struct abuf *ab) {
     } else {
 
       // truncate erow to fit width of screen
-      int len = E.row[y].size;
+      int len = E.row[filerow].size;
       if (len > E.screencols) len = E.screencols;
-      abAppend(ab, E.row[y].chars, len);
+      abAppend(ab, E.row[filerow].chars, len);
     }
 
     // erase till end of line
@@ -388,6 +409,9 @@ void editorDrawRows(struct abuf *ab) {
 // VT100 stuff
 // clears screen and sets cursor top left
 void editorRefreshScreen() {
+
+  // scroll to correct rowoff
+  editorScroll();
 
   struct abuf ab = ABUF_INIT;
 
@@ -404,8 +428,9 @@ void editorRefreshScreen() {
   
   // esc-seq to place the cursor;
   // +1 to convert to 1 indexing
-  
-  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+  // E.cy refers to location in the file so
+  // we subtract E.rowoff to set the location of the cursor
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, E.cx + 1);
   
   abAppend(&ab, buf, strlen(buf));
 
@@ -442,7 +467,7 @@ void editorMoveCursor(int key) {
     }
     break;
   case ARROW_DOWN:
-    if (E.cy != E.screenrows - 1) {
+    if (E.cy < E.numrows) {
       E.cy++;
     }
     break;
@@ -495,6 +520,7 @@ void initEditor() {
 
   E.cx = 0;
   E.cy = 0;
+  E.rowoff = 0;
   E.numrows = 0;
   E.row = NULL;
 
@@ -502,7 +528,9 @@ void initEditor() {
 }
 
 int main(int argc, char *argv[]) {
+  
   enableRawMode();
+  
   initEditor();
 
   if (argc >= 2) {
@@ -510,6 +538,7 @@ int main(int argc, char *argv[]) {
   }
   
   while (1) {
+
     editorRefreshScreen();
 
     // will hang in the following routine
