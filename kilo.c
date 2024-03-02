@@ -31,6 +31,8 @@
 // by setting the top 3 bits to 0
 // e.g a = 97 = 0100 0001 --> ctrl+a = 01 = 000000001
 
+
+// special values used to communicate keyboard keys
 enum editorKey {
   ARROW_LEFT = 1000,
   ARROW_RIGHT,
@@ -58,7 +60,7 @@ struct editorConfig {
   int screenrows;
   int screencols;
   int numrows;
-  erow row;
+  erow *row;
   struct termios orig_termios;
 };
 
@@ -246,6 +248,24 @@ int getWindowSize(int *rows, int *cols) {
   }
 }
 
+/*** row ops ***/
+
+void editorAppendRow(char *s, size_t len) {
+
+  // realloc mem for new row
+  E.row = realloc(E.row, sizeof(erow) * (E.numrows + 1));
+
+  // index
+  int at = E.numrows;
+
+  E.row[at].size = len;
+  E.row[at].chars = malloc(len + 1);
+  memcpy(E.row[at].chars, s, len);
+  E.row[at].chars[len] = '\0';
+  E.numrows++;
+
+}
+
 /*** fileio ***/
 
 // open a file
@@ -259,15 +279,16 @@ void editorOpen(char *filename) {
   ssize_t linecap = 0;
   ssize_t linelen;
 
-  // get first line
-  linelen = getline(&line, &linecap, fp);
+  // get a line
 
+  while ((linelen = getline(&line, &linecap, fp)) != -1){
+  
   // getline() reads an entire line from stream, storing the address
-  // of the buffer containing the text into *lineptr.  The buffer is
+  // of the buffer containing the text into *line.  The buffer is
   // null-terminated and includes the newline character, if one was
   // found.
 
-  // If *lineptr is set to NULL before the call, then getline() will
+  // If *line is set to NULL before the call, then getline() will
   // allocate a buffer for storing the line.  This buffer should be
   // freed by the user program even if getline() failed.
 
@@ -276,23 +297,16 @@ void editorOpen(char *filename) {
   // including the terminating null byte ('\0').  This value can be
   // used to handle embedded null bytes in the line read.
 
-  if (linelen != -1) {
-
     // decrease linelen till we hit eol
-    while (linelen > 0 && (line[linelen -1] == '\n') || (line[linelen -1] == '\r') ) {
+    while (linelen > 0 && (line[linelen -1] == '\n') ||
+                          (line[linelen -1] == '\r') )
       linelen--;
-    }
-
-    E.row.size = linelen;
-    E.row.chars = malloc(linelen + 1);
-    memcpy(E.row.chars, line, linelen);
-    E.row.chars[linelen] = '\0';
-    E.numrows = 1;
+    
+    editorAppendRow(line, linelen);
   }
 
   free(line);
   fclose(fp);
-
 }
 
 /*** append buffer ***/
@@ -358,9 +372,9 @@ void editorDrawRows(struct abuf *ab) {
     } else {
 
       // truncate erow to fit width of screen
-      int len = E.row.size;
+      int len = E.row[y].size;
       if (len > E.screencols) len = E.screencols;
-      abAppend(ab, E.row.chars, len);
+      abAppend(ab, E.row[y].chars, len);
     }
 
     // erase till end of line
@@ -482,6 +496,7 @@ void initEditor() {
   E.cx = 0;
   E.cy = 0;
   E.numrows = 0;
+  E.row = NULL;
 
   if (getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
 }
